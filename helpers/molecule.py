@@ -926,7 +926,7 @@ class Molecule:
                         problem += sum(bond_orders[bond] for bond in adjacent_non_hydrogen_bonds) <= 3, 'No allenes for atom {atom_desc} in short ring'.format(atom_desc=atom_short_desc(atom))
 
         try:
-            problem.sequentialSolve(OBJECTIVES, timeout=ILP_SOLVER_TIMEOUT)
+            problem.sequentialSolve(OBJECTIVES)#, timeout=ILP_SOLVER_TIMEOUT)
             assert problem.status == 1, (self.name, LpStatus[problem.status])
         except (AssertionError, PulpSolverError) as e:
             args_id = ','.join(map(str, [enforce_octet_rule, allow_radicals, bond_order_constraints]))
