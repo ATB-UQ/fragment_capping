@@ -3,6 +3,7 @@ import unittest
 
 from fragment_capping.helpers.types_helpers import Atom
 from fragment_capping.helpers.molecule import Molecule, molecule_from_pdb_str
+from fragment_capping.helpers.babel import energy_minimised_pdb
 
 CAPPING_FUNCTION_NAME = 'get_best_capped_molecule_with_ILP'
 
@@ -619,6 +620,13 @@ class Test_Capping(unittest.TestCase):
         for use_ILP in (True,):
             capped_molecule = getattr(uncapped_molecule, CAPPING_FUNCTION_NAME)(debug=None)
             capped_molecule.write_graph('capped_molecule_with_{0}'.format('ILP' if use_ILP else 'bruteforce'), output_size=(1200, 1200))
+            pdb = energy_minimised_pdb(pdb_str=capped_molecule.dummy_pdb())
+
+            # create output pdb file
+            file_path = 'pdbout/{0}.pdb'.format(capped_molecule.name)
+            outfile = open(file_path, "w")
+            outfile.write("{}".format(pdb))
+
 
         assert capped_molecule.formula(charge=True) == 'C16H26O5', capped_molecule.formula(charge=True)
 
