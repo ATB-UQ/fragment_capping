@@ -454,6 +454,9 @@ class Molecule:
                 if num_h_to_place == 4:
                     continue
 
+            if hybridisation > 4:
+                continue
+
             # Update atom coordinates
             for (n, atom_id) in enumerate(h_neighbour_ids):
                 self.atoms[atom_id] = Atom(
