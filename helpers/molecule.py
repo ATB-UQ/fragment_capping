@@ -54,7 +54,6 @@ class Molecule:
             raise Exception('Invalide type(atoms): {0}'.format(type(atoms)))
 
         try:
-            print("Dictionary: {}".format(atoms_dict))
             self.atoms = validated_atoms_dict(atoms_dict)
         except AssertionError:
             raise AssertionError('In: {0}'.format(atoms_dict))
