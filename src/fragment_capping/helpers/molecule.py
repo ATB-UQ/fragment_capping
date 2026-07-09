@@ -1,21 +1,20 @@
 from typing import Any, Optional, List, Tuple, Dict, Union, Set, Sequence, TextIO, FrozenSet, Callable
 from copy import deepcopy
 from operator import itemgetter
-from itertools import groupby, product, count
+from itertools import groupby, product
 from io import StringIO
-from functools import reduce, lru_cache
+from functools import reduce
 from os.path import join
 from hashlib import md5
 from sys import stderr
-from math import sqrt
-from warnings import warn
+
+from pulp import PulpSolverError
 
 from fragment_capping.config import ILP_SOLVER_TIMEOUT
-from fragment_capping.helpers.types_helpers import Fragment, ATB_Molid, Atom, FRAGMENT_CAPPING_DIR, Bond, ATOM_INDEX, MIN, MAX, DESC
-from fragment_capping.helpers.parameters import FULL_VALENCES, POSSIBLE_CHARGES,  Capping_Strategy, possible_bond_order_for_atom_pair, coordinates_n_angstroms_away_from, possible_charge_for_atom, ALL_ELEMENTS, electronegativity_spread, ELECTRONEGATIVITIES, VALENCE_ELECTRONS, MIN_ABSOLUTE_CHARGE, MAX_ABSOLUTE_CHARGE, MIN_BOND_ORDER, MAX_BOND_ORDER, MUST_BE_INT, MAX_NONBONDED_ELECTRONS, NO_CAP, ELECTRONS_PER_BOND, ALL_CAPPING_OPTIONS
+from fragment_capping.helpers.types_helpers import Atom, FRAGMENT_CAPPING_DIR, Bond, ATOM_INDEX, MIN, MAX, DESC
+from fragment_capping.helpers.parameters import FULL_VALENCES, Capping_Strategy, possible_bond_order_for_atom_pair, coordinates_n_angstroms_away_from, possible_charge_for_atom, ALL_ELEMENTS, electronegativity_spread, ELECTRONEGATIVITIES, VALENCE_ELECTRONS, MIN_ABSOLUTE_CHARGE, MAX_ABSOLUTE_CHARGE, MIN_BOND_ORDER, MAX_BOND_ORDER, MUST_BE_INT, MAX_NONBONDED_ELECTRONS, NO_CAP, ELECTRONS_PER_BOND, ALL_CAPPING_OPTIONS
 from fragment_capping.helpers.babel import energy_minimised_pdb
 from fragment_capping.helpers.rings import bonds_for_ring, atom_indices_in_phenyl_rings_for
-from fragment_capping.helpers.graphs import unique_molecules
 from fragment_capping.helpers.tautomers import get_all_tautomers, get_all_tautomers_naive
 from fragment_capping.helpers.capping import get_best_capped_molecule_with_ILP, get_best_capped_molecule
 from fragment_capping.helpers.misc import write_to_debug, atom_short_desc
@@ -918,7 +917,6 @@ class Molecule:
             ``disallow_allenes_completely``: Disallow allenes (=C=) completely.
         '''
         from pulp import LpProblem, LpMinimize, LpInteger, LpVariable, LpBinary, LpStatus, value
-        from pulp.solvers import PulpSolverError
 
         print_if_debug = lambda *args: write_to_debug(debug, *args)
 
@@ -1025,7 +1023,7 @@ class Molecule:
                         problem += sum(bond_orders[bond] for bond in adjacent_non_hydrogen_bonds) <= 3, 'No allenes for atom {atom_desc} in short ring'.format(atom_desc=atom_short_desc(atom))
 
         try:
-            problem.sequentialSolve(OBJECTIVES, timeout=ILP_SOLVER_TIMEOUT)
+            problem.sequentialSolve(OBJECTIVES)
             assert problem.status == 1, (self.name, LpStatus[problem.status])
         except (AssertionError, PulpSolverError) as e:
             args_id = ','.join(map(str, [enforce_octet_rule, allow_radicals, bond_order_constraints]))

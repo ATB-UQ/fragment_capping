@@ -1,10 +1,8 @@
 from sys import stderr
 from typing import List, Optional, TextIO, Tuple
 from copy import deepcopy
-from operator import itemgetter
 from itertools import groupby, chain, count
-from pulp import LpProblem, LpMinimize, LpInteger, LpVariable, LpBinary, LpStatus, lpSum
-from pulp.solvers import GUROBI_CMD
+from pulp import LpProblem, LpMinimize, LpInteger, LpVariable, LpBinary, LpStatus, lpSum, GUROBI_CMD
 
 from fragment_capping.config import ILP_SOLVER_TIMEOUT
 from fragment_capping.helpers.types_helpers import Atom, MIN, MAX
