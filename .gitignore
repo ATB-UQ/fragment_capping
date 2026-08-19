@@ -4,3 +4,6 @@
 .time
 .mypy_cache/
 *.lp
+__pycache__/
+*.egg-info/
+.idea/
