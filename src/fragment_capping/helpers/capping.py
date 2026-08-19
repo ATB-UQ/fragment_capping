@@ -1,7 +1,7 @@
 from typing import Optional, TextIO, Dict, Any, List
-from sys import stdout
+from sys import stdout, stderr
 
-from fragment_capping.config import ILP_SOLVER_TIMEOUT
+from fragment_capping.config import failed_ilp_debug_path, ilp_solver
 from fragment_capping.helpers.types_helpers import Atom, MIN, MAX
 from fragment_capping.helpers.parameters import MAX_ABSOLUTE_CHARGE, MIN_ABSOLUTE_CHARGE, MAX_NONBONDED_ELECTRONS, MAX_BOND_ORDER, MIN_BOND_ORDER, VALENCE_ELECTRONS, ELECTRONS_PER_BOND, MUST_BE_INT, ALL_CAPPING_OPTIONS, ELECTRONEGATIVITIES, Capping_Strategy, NO_CAP, new_atom_for_capping_strategy, max_valence_for, min_valence_for
 from fragment_capping.helpers.misc import write_to_debug
@@ -92,7 +92,7 @@ def get_best_capped_molecule_with_ILP(
 
     from pulp import LpProblem, LpMinimize, LpInteger, LpVariable, LpBinary, LpStatus, lpSum
 
-    problem = LpProblem("Capping problem for molecule {0}".format(molecule.name), LpMinimize)
+    problem = LpProblem("Capping_problem_for_molecule_{0}".format(molecule.name), LpMinimize)
 
     ELECTRON_MULTIPLIER = (2 if not allow_radicals else 1)
 
@@ -246,13 +246,18 @@ def get_best_capped_molecule_with_ILP(
                 )
 
     try:
-        problem.sequentialSolve(OBJECTIVES, timeout=ILP_SOLVER_TIMEOUT)
+        problem.sequentialSolve(OBJECTIVES, solver=ilp_solver())
         assert problem.status == 1, (molecule.name, LpStatus[problem.status])
         #assert False
     except Exception as e:
-        problem.writeLP('debug.lp')
-        molecule.write_graph('DEBUG', output_size=(1000, 1000))
-        print('Failed LP written to "debug.lp"')
+        # Off unless ATB_FRAGMENT_CAPPING_DEBUG is set: these used to be written
+        # into the working directory, which under Apache is the served
+        # DocumentRoot. See fragment_capping.config.
+        debug_file = failed_ilp_debug_path('{0}_capping_debug.lp'.format(molecule.name))
+        if debug_file is not None:
+            problem.writeLP(debug_file)
+            molecule.write_graph('DEBUG', output_size=(1000, 1000))
+            stderr.write('Failed LP written to "{0}"\n'.format(debug_file))
         raise
 
     DELETE_FAILED_CAPS = True

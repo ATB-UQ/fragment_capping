@@ -4,7 +4,7 @@ from copy import deepcopy
 from itertools import groupby, chain, count
 from pulp import LpProblem, LpMinimize, LpInteger, LpVariable, LpBinary, LpStatus, lpSum, GUROBI_CMD
 
-from fragment_capping.config import ILP_SOLVER_TIMEOUT
+from fragment_capping.config import ILP_SOLVER_TIMEOUT, SOLVER_MSG, failed_ilp_debug_path, ilp_solver
 from fragment_capping.helpers.types_helpers import Atom, MIN, MAX
 from fragment_capping.helpers.parameters import MAX_ABSOLUTE_CHARGE, MIN_ABSOLUTE_CHARGE, MAX_NONBONDED_ELECTRONS, \
     MAX_BOND_ORDER, MIN_BOND_ORDER, VALENCE_ELECTRONS, ELECTRONS_PER_BOND, MUST_BE_INT, Capping_Strategy, NO_CAP, H_CAP, \
@@ -26,7 +26,7 @@ def get_all_tautomers_naive(
 
     molecule.remove_all_hydrogens()
 
-    problem = LpProblem("Lewis problem (tautomers) for molecule {0}".format(molecule.name), LpMinimize)
+    problem = LpProblem("Lewis_tautomers_problem_for_molecule_{0}".format(molecule.name), LpMinimize)
 
     def maximum_number_hydrogens_for(atom: Atom) -> int:
         if atom.element == 'C' and atom.valence == 3:
@@ -176,19 +176,25 @@ def get_all_tautomers_naive(
 
         return new_molecule
 
-    def debug_failed_ILP(n: Optional[int] = None) -> None:
-        debug_filename = 'debug{0}.lp'.format('' if n is None else '_{n}'.format(n=n))
+    def debug_failed_ILP(n: Optional[int] = None, force: bool = False) -> None:
+        # Off unless ATB_FRAGMENT_CAPPING_DEBUG is set, and never written into the
+        # working directory (under Apache that is the served DocumentRoot).
+        # See fragment_capping.config.
+        debug_filename = failed_ilp_debug_path(
+            '{0}_tautomers_debug{1}.lp'.format(molecule.name, '' if n is None else '_{n}'.format(n=n)),
+            force=force,
+        )
+        if debug_filename is None:
+            return
         problem.writeLP(debug_filename)
-        print('Failed LP written to "{0}"'.format(debug_filename))
+        stderr.write('Failed LP written to "{0}"\n'.format(debug_filename))
 
     # Solve once to find optimal solution
     try:
         write_to_debug(debug, 'Solving')
-        problem.sequentialSolve(OBJECTIVES, timeout=ILP_SOLVER_TIMEOUT)
+        problem.sequentialSolve(OBJECTIVES, solver=ilp_solver())
     except Exception as e:
-        problem.writeLP('debug.lp')
-        molecule.write_graph('DEBUG', output_size=(2000, 2000))
-        print('Failed LP written to "debug.lp"')
+        debug_failed_ILP()
         raise
 
     all_tautomers = [new_molecule_for_current_solution(n=0)]
@@ -212,7 +218,7 @@ def get_all_tautomers_naive(
         solutions.append(s)
 
         try:
-            problem.solve(timeout=ILP_SOLVER_TIMEOUT)
+            problem.solve(solver=ilp_solver())
         except Exception as e:
             debug_failed_ILP()
             raise
@@ -299,7 +305,7 @@ def get_all_tautomers(
         ],
     )
 
-    problem = LpProblem("Tautomer enumeration problem for molecule {0}".format(molecule.name), LpMinimize)
+    problem = LpProblem("Tautomer_enumeration_problem_for_molecule_{0}".format(molecule.name), LpMinimize)
 
     ELECTRON_MULTIPLIER = (2 if not allow_radicals else 1)
 
@@ -478,10 +484,20 @@ def get_all_tautomers(
                 if len(adjacent_non_hydrogen_bonds) == 2:
                     problem += sum(bond_orders[bond] for bond in adjacent_non_hydrogen_bonds) <= 3, 'No allenes for atom {atom_desc} in short ring'.format(atom_desc=atom_short_desc(atom))
 
-    def debug_failed_ILP(n: Optional[int] = None) -> None:
-        debug_filename = 'debug{0}.lp'.format('' if n is None else '_{n}'.format(n=n))
+    def debug_failed_ILP(n: Optional[int] = None, force: bool = False) -> None:
+        # Off unless ATB_FRAGMENT_CAPPING_DEBUG is set, and never written into the
+        # working directory (under Apache that is the served DocumentRoot).
+        # See fragment_capping.config.
+        debug_filename = failed_ilp_debug_path(
+            '{0}_tautomer_enumeration_debug{1}.lp'.format(
+                molecule.name, '' if n is None else '_{n}'.format(n=n),
+            ),
+            force=force,
+        )
+        if debug_filename is None:
+            return
         problem.writeLP(debug_filename)
-        print('Failed LP written to "{0}"'.format(debug_filename))
+        stderr.write('Failed LP written to "{0}"\n'.format(debug_filename))
 
     def encode_solution() -> int:
         # bitshift is faster than multiplication by 2**i
@@ -561,14 +577,15 @@ def get_all_tautomers(
 
     # Solve once to find optimal solution with lowest encode_solution()
     try:
-        problem.sequentialSolve(OBJECTIVES, timeout=ILP_SOLVER_TIMEOUT)
+        problem.sequentialSolve(OBJECTIVES, solver=ilp_solver())
         assert problem.status == 1, (molecule.name, LpStatus[problem.status])
     except Exception as e:
         debug_failed_ILP(0)
         raise
 
     if debug is not None:
-        debug_failed_ILP(0)
+        # An explicit debug stream from the caller is opt-in enough on its own.
+        debug_failed_ILP(0, force=True)
 
     all_tautomers = [new_molecule_for_current_solution(n=0)]
 
@@ -591,8 +608,11 @@ def get_all_tautomers(
 
         try:
             problem.solve(
-                solver=GUROBI_CMD() if use_gurobi else None,
-                timeout=ILP_SOLVER_TIMEOUT,
+                solver=(
+                    GUROBI_CMD(msg=SOLVER_MSG, timeLimit=ILP_SOLVER_TIMEOUT)
+                    if use_gurobi
+                    else ilp_solver()
+                ),
             )
         except Exception as e:
             debug_failed_ILP(n)

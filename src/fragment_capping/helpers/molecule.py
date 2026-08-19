@@ -10,7 +10,7 @@ from sys import stderr
 
 from pulp import PulpSolverError
 
-from fragment_capping.config import ILP_SOLVER_TIMEOUT
+from fragment_capping.config import failed_ilp_debug_path, ilp_solver
 from fragment_capping.helpers.types_helpers import Atom, FRAGMENT_CAPPING_DIR, Bond, ATOM_INDEX, MIN, MAX, DESC
 from fragment_capping.helpers.parameters import FULL_VALENCES, Capping_Strategy, possible_bond_order_for_atom_pair, coordinates_n_angstroms_away_from, possible_charge_for_atom, ALL_ELEMENTS, electronegativity_spread, ELECTRONEGATIVITIES, VALENCE_ELECTRONS, MIN_ABSOLUTE_CHARGE, MAX_ABSOLUTE_CHARGE, MIN_BOND_ORDER, MAX_BOND_ORDER, MUST_BE_INT, MAX_NONBONDED_ELECTRONS, NO_CAP, ELECTRONS_PER_BOND, ALL_CAPPING_OPTIONS
 from fragment_capping.helpers.babel import energy_minimised_pdb
@@ -25,6 +25,9 @@ from fragment_capping.helpers.sybyl import sybyl_atom_type
 from fragment_capping.helpers.vector_calculations import *
 
 PropertyMap = Any
+
+# Cap on how many radical atom indices the radical-molecule warning spells out.
+MAX_REPORTED_RADICAL_ATOMS = 20
 
 LINEAR = 2
 TRIGONAL_PLANAR = 3
@@ -54,8 +57,18 @@ class Molecule:
 
         try:
             self.atoms = validated_atoms_dict(atoms_dict)
-        except AssertionError:
-            raise AssertionError('In: {0}'.format(atoms_dict))
+        except AssertionError as validation_error:
+            # Report which atoms failed, not the whole molecule. Interpolating
+            # atoms_dict wholesale produced single exception messages up to 136 kB;
+            # under Apache those land on one line of error_log (mod_fcgid copies a
+            # worker's stderr in verbatim), where 31 of them were a quarter of the
+            # entire log. The offending atoms are what actually diagnoses this --
+            # the other few thousand are noise.
+            raise AssertionError('{0}. In molecule of {1} atoms; offending atom(s): {2}'.format(
+                validation_error,
+                len(atoms_dict),
+                _summarised_atoms(atoms_dict),
+            ))
 
         self.bonds = set(map(frozenset, bonds))
         validate_bond_dict(self.atoms, self.bonds)
@@ -922,7 +935,7 @@ class Molecule:
 
         assert not (allow_radicals and enforce_octet_rule), "Can't simultaneously allow_radicals and enforce octet rule."
 
-        problem = LpProblem("Lewis problem (bond order and charge assignment) for molecule {0}".format(self.name), LpMinimize)
+        problem = LpProblem("Lewis_bond_order_and_charge_problem_for_molecule_{0}".format(self.name), LpMinimize)
 
         ELECTRON_MULTIPLIER = (2 if not allow_radicals else 1)
 
@@ -1023,19 +1036,29 @@ class Molecule:
                         problem += sum(bond_orders[bond] for bond in adjacent_non_hydrogen_bonds) <= 3, 'No allenes for atom {atom_desc} in short ring'.format(atom_desc=atom_short_desc(atom))
 
         try:
-            problem.sequentialSolve(OBJECTIVES)
+            problem.sequentialSolve(OBJECTIVES, solver=ilp_solver())
             assert problem.status == 1, (self.name, LpStatus[problem.status])
         except (AssertionError, PulpSolverError) as e:
+            # Off unless ATB_FRAGMENT_CAPPING_DEBUG is set: these used to be
+            # written into the working directory, which under Apache is the
+            # served DocumentRoot. See fragment_capping.config.
             args_id = ','.join(map(str, [enforce_octet_rule, allow_radicals, bond_order_constraints]))
-            debug_file = '{0}_{1}_debug.lp'.format(self.name, args_id)
-            problem.writeLP(debug_file)
-            self.write_graph('DEBUG', output_size=(1000, 1000))
-            stderr.write('\n' + 'Failed LP written to "{0}"'.format(debug_file))
+            debug_file = failed_ilp_debug_path('{0}_{1}_debug.lp'.format(self.name, args_id))
+            if debug_file is not None:
+                problem.writeLP(debug_file)
+                self.write_graph('DEBUG', output_size=(1000, 1000))
+                stderr.write('\n' + 'Failed LP written to "{0}"'.format(debug_file))
             raise
 
         self.formal_charges, self.bond_orders, self.non_bonded_electrons = {}, {}, {}
 
         write_to_debug(debug, 'Objective function values: {0}'.format([value(objective) for objective in OBJECTIVES]))
+
+        # Collected and reported once below. This used to be a bare
+        # stderr.write('Warning: Radical molecule...') with no newline, executed
+        # per radical atom, so a molecule with many radical centres produced a
+        # single error_log line of hundreds of concatenated copies.
+        radical_atom_indices = []
 
         for v in problem.variables():
             variable_type, variable_substr = v.name.split('_')
@@ -1052,9 +1075,25 @@ class Molecule:
                 atom_index = int(variable_substr)
                 self.non_bonded_electrons[atom_index] = MUST_BE_INT(v.varValue) * ELECTRON_MULTIPLIER
                 if allow_radicals and self.non_bonded_electrons[atom_index] % 2 == 1:
-                    stderr.write('Warning: Radical molecule...')
+                    radical_atom_indices.append(atom_index)
             else:
                 raise Exception('Unknown variable type: {0}'.format(variable_type))
+
+        if radical_atom_indices:
+            # The count is the useful part; the indices are only ever skimmed. A
+            # radical-heavy macromolecule has hundreds of them (289 observed on a
+            # 1449-atom structure), and on the website's request path this line goes
+            # straight into Apache's error_log via mod_fcgid -- one such molecule
+            # produced a single ~2KB line. Show enough to identify the pattern.
+            shown_indices = sorted(radical_atom_indices)[:MAX_REPORTED_RADICAL_ATOMS]
+            stderr.write('Warning: Radical molecule {0}: {1} radical atom(s) at indices {2}{3}\n'.format(
+                self.name,
+                len(radical_atom_indices),
+                shown_indices,
+                ' (+{0} more)'.format(len(radical_atom_indices) - len(shown_indices))
+                    if len(radical_atom_indices) > len(shown_indices) else '',
+            ))
+
         write_to_debug(debug, 'molecule_name', self.name)
         write_to_debug(debug, 'bond_orders:', self.bond_orders)
         write_to_debug(debug, 'formal_charges', self.formal_charges)
@@ -1296,6 +1335,30 @@ class Molecule:
         return get_best_capped_molecule(self, *args, **kwargs)
 
 Uncapped_Molecule = Molecule
+
+MAX_SUMMARISED_ATOMS = 5
+
+
+def _summarised_atoms(atoms: Dict[int, Atom]) -> str:
+    '''The few atoms that plausibly explain a validated_atoms_dict failure.
+
+    Both assertions in validated_atoms_dict below have a small, identifiable
+    culprit -- an unsupported element, or an index that disagrees with its key --
+    so there is never a reason to render the whole dictionary. Falls back to a
+    short sample if neither test isolates anything.
+    '''
+    offenders = [
+        atom for (atom_index, atom) in atoms.items()
+        if atom.element not in ALL_ELEMENTS or atom_index != atom.index
+    ]
+    if not offenders:
+        offenders = list(atoms.values())
+    shown = offenders[:MAX_SUMMARISED_ATOMS]
+    return '{0}{1}'.format(
+        ', '.join(str(atom) for atom in shown),
+        '' if len(offenders) <= MAX_SUMMARISED_ATOMS else ' (+{0} more)'.format(len(offenders) - MAX_SUMMARISED_ATOMS),
+    )
+
 
 def validated_atoms_dict(atoms: Dict[int, Atom]) -> Dict[int, Atom]:
     assert {atom.element for atom in atoms.values()} <= ALL_ELEMENTS, 'Unsupported elements: {0}'.format({atom.element for atom in atoms.values()} - ALL_ELEMENTS)
