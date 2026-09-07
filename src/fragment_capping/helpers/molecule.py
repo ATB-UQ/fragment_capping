@@ -10,7 +10,7 @@ from sys import stderr
 
 from pulp import PulpSolverError
 
-from fragment_capping.config import failed_ilp_debug_path, ilp_solver
+from fragment_capping.config import failed_ilp_debug_path, sequential_solve_within
 from fragment_capping.helpers.types_helpers import Atom, FRAGMENT_CAPPING_DIR, Bond, ATOM_INDEX, MIN, MAX, DESC
 from fragment_capping.helpers.parameters import FULL_VALENCES, Capping_Strategy, possible_bond_order_for_atom_pair, coordinates_n_angstroms_away_from, possible_charge_for_atom, ALL_ELEMENTS, electronegativity_spread, ELECTRONEGATIVITIES, VALENCE_ELECTRONS, MIN_ABSOLUTE_CHARGE, MAX_ABSOLUTE_CHARGE, MIN_BOND_ORDER, MAX_BOND_ORDER, MUST_BE_INT, MAX_NONBONDED_ELECTRONS, NO_CAP, ELECTRONS_PER_BOND, ALL_CAPPING_OPTIONS
 from fragment_capping.helpers.babel import energy_minimised_pdb
@@ -922,12 +922,16 @@ class Molecule:
         disallow_triple_bond_in_small_rings: bool = True,
         disallow_allenes_in_small_rings: bool = True,
         disallow_allenes_completely: bool = False,
+        timeout: Optional[float] = None,
     ) -> None:
         '''
         Args:
             ``disallow_triple_bond_in_small_rings``: Disallow triple bonds in small rings (rings with size <= ``SMALL_RING``).
             ``disallow_allenes_in_small_rings``: Disallow allenes (=C=) in small rings (rings with size <= ``SMALL_RING``).
             ``disallow_allenes_completely``: Disallow allenes (=C=) completely.
+            ``timeout``: Wall-clock seconds for the whole solve (all objectives together);
+                raises fragment_capping.config.ILP_Timeout when exceeded without a solution.
+                None means ILP_SOLVER_TIMEOUT per objective, as before.
         '''
         from pulp import LpProblem, LpMinimize, LpInteger, LpVariable, LpBinary, LpStatus, value
 
@@ -1036,7 +1040,7 @@ class Molecule:
                         problem += sum(bond_orders[bond] for bond in adjacent_non_hydrogen_bonds) <= 3, 'No allenes for atom {atom_desc} in short ring'.format(atom_desc=atom_short_desc(atom))
 
         try:
-            problem.sequentialSolve(OBJECTIVES, solver=ilp_solver())
+            sequential_solve_within(problem, OBJECTIVES, timeout=timeout)
             assert problem.status == 1, (self.name, LpStatus[problem.status])
         except (AssertionError, PulpSolverError) as e:
             # Off unless ATB_FRAGMENT_CAPPING_DEBUG is set: these used to be

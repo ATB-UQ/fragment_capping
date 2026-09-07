@@ -1,9 +1,15 @@
 from os import environ
+from typing import Optional
 from os.path import join
 from tempfile import gettempdir
 
 # Wall-clock cap on a single ILP solve.
 ILP_SOLVER_TIMEOUT = 600
+
+# With less than this left of a caller's budget, a CBC run cannot plausibly
+# produce anything, so sequential_solve_within raises rather than starting one
+# it will only have to abandon.
+MINIMUM_ILP_SOLVE_SECONDS = 1.0
 
 # CBC prints a ~40-line report (version banner, cut statistics, timings) to the
 # solver process' stdout for every single ILP solved, and pulp leaves that
@@ -145,6 +151,77 @@ def ilp_solver(timeout: float = ILP_SOLVER_TIMEOUT):
     returns.
     '''
     return _diagnosable_cbc_class()(msg=SOLVER_MSG, timeLimit=timeout)
+
+
+class ILP_Timeout(TimeoutError):
+    '''An ILP was given a wall-clock budget and ran out of it without a solution.'''
+
+
+def sequential_solve_within(problem, objectives, timeout: Optional[float] = None) -> None:
+    '''``problem.sequentialSolve(objectives)``, with ``timeout`` bounding the whole
+    sequence rather than each solve in it.
+
+    ``timeLimit`` on the solver object caps one CBC run, but sequentialSolve runs
+    one per objective (three, for bond-order assignment), so a caller that must
+    finish inside a wall-clock window -- the website's 2D-sketch request, which
+    mod_fcgid kills at FcgidIOTimeout -- could not express that with it: three
+    solves each allowed the full window is three times the window. This re-derives
+    the limit from what is left before each solve, so the sequence as a whole ends
+    inside ``timeout``. Passing None is pulp's own behaviour: ILP_SOLVER_TIMEOUT
+    per solve.
+
+    A solve stopped on time that still holds a feasible incumbent is **kept**. CBC
+    reports that as LpStatusOptimal with sol_status LpSolutionIntegerFeasible, and
+    the assignment it found satisfies every constraint -- it is only the objective
+    (minimal formal charges) that may not be optimal. For a 2D sketch a slightly
+    odd charge assignment beats no picture and a killed worker. Only a solve that
+    found nothing at all raises ILP_Timeout. Every other failing status is left on
+    the problem and returned, so the caller's own status assertion reports it
+    exactly as it always has.
+    '''
+    from time import time
+    from pulp import value, const
+
+    deadline = None if timeout is None else time() + timeout
+
+    problem.startClock()
+    try:
+        for i, objective in enumerate(objectives):
+            if deadline is None:
+                solver = ilp_solver()
+            else:
+                remaining = deadline - time()
+                if remaining < MINIMUM_ILP_SOLVE_SECONDS:
+                    raise ILP_Timeout(
+                        'Ran out of the {0:.0f}s ILP budget before objective {1} of {2}'.format(
+                            timeout, i + 1, len(objectives),
+                        ),
+                    )
+                solver = ilp_solver(timeout=remaining)
+
+            problem.setObjective(objective)
+            solver.actualSolve(problem)
+            problem.solver = solver
+
+            if problem.status == const.LpStatusNotSolved:
+                # CBC's "Stopped" -- the time limit ran out before it had anything.
+                raise ILP_Timeout(
+                    'ILP objective {0} of {1} stopped on time with no solution'.format(i + 1, len(objectives)),
+                )
+            if problem.status != const.LpStatusOptimal:
+                # Infeasible/unbounded/undefined: not a timeout, and the caller
+                # already asserts on the status and dumps the failed .lp.
+                return
+
+            # Freeze what this objective achieved before optimising the next,
+            # exactly as pulp's sequentialSolve does (its default tolerances are
+            # rel=1, absol=0).
+            if problem.sense == const.LpMinimize:
+                problem += objective <= value(objective), 'Sequence_Objective_{0}'.format(i)
+            else:
+                problem += objective >= value(objective), 'Sequence_Objective_{0}'.format(i)
+    finally:
+        problem.stopClock()
 
 
 def failed_ilp_debug_path(file_name: str, force: bool = False):
