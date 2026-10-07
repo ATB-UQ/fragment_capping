@@ -12,23 +12,36 @@ Caron, Bertrand; Engler, Martin; Mark, Alan E. and Klau, Gunnar W.
 An Integer Linear Program (ILP) for predicting Lewis structures and applications to capping molecular fragments and enumerating tautomers
 ```
 
-## Standard-dependencies
+## Status and place in the platform
 
-See `requirements.txt`. Install dependencies by running `make setup`.
+**Live-support.** Used on the request path by `website` (molecule images via
+`helpers/molecule_img.py`, the `fragments` API's capping endpoint, `tasks/set_qm_bond_orders.py`) and
+as the capping engine under `dihedral_fragments`, `dihedral_parameterization` and
+`fragment_merger`. The platform's own bond-order assignment for standard InChI/SMILES is a
+different, newer ILP (`atb_helpers.bond_orders`, scipy/HiGHS); this package is the paper's
+original PuLP/CBC formulation and is no longer where new work goes.
 
-* `Python >=3.6`
-* `pulp`
-* `networkx`
-* `numpy`
+## Install and dependencies
 
-## Non-standard dependencies
+Editable install in the shared venv (`uv pip install --python /home/atb/ATB/.venv/bin/python -e
+/home/atb/ATB/fragment_capping --no-deps`). Declared in `setup.cfg`: `pulp`, `networkx`, `numpy`;
+`chemistry_helpers` (ATB sibling) and the `babel` executable are used at run time. There is no
+`requirements.txt` (the old `make setup` target is gone). `graph_tool` and `chem_graph_tool`
+are **optional** and imported lazily, only by the plotting/debug paths
+(`helpers/molecule.py:290,614`); they are not installed in the shared venv.
 
-* [graph_tool](https://graph-tool.skewed.de): Efficient network-analysis with Python
-* [chem_graph_tool](https://github.com/bertrand-caron/chem_graph_tool): Helper library to use `graph_tool` with chemical structure files (PDB format).
-* [chemistry_helpers](https://github.com/bertrand-caron/chemistry_helpers): Helper library for interacting with chemical structure files (PDB files, etc.)
-* [OpenBabel](http://openbabel.org): The Open Source Chemistry Toolbox
+Configuration (all optional): `ATB_FRAGMENT_CAPPING_SOLVER_MSG=true` (CBC output),
+`ATB_FRAGMENT_CAPPING_DEBUG=true` / `ATB_FRAGMENT_CAPPING_DEBUG_DIR` (write failed ILPs out).
+Solver time limits are in `config.py` (`ilp_solver`, `sequential_solve_within`; callers can bound
+the whole bond-order ILP).
 
-All Python module should be located in your `PYTHONPATH`.
+## Tests
+
+`src/fragment_capping/test_*.py` are `unittest` classes that read relative paths
+(`pdbs/*.pdb`), so run them from inside `src/fragment_capping/`. **They do not pass today**
+(measured 2026-10-07): the `pdbs/` fixtures are not tracked (only a `.gitignore` is), and the
+`test_capping_wang.py` cases build `Atom(coordinates=None)`, which `validated_atoms_dict` now
+rejects (`helpers/molecule.py:1374`). The `Makefile` still targets an Anaconda 5.0.1 path.
 
 ## Algorithms and examples
 
