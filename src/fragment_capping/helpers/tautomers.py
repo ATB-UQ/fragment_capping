@@ -182,6 +182,7 @@ def get_all_tautomers_naive(
     # Solve once to find optimal solution
     try:
         write_to_debug(debug, 'Solving')
+        constraints_before_sequential_solve = set(problem.constraints)
         problem.sequentialSolve(OBJECTIVES, solver=ilp_solver())
     except Exception as e:
         debug_failed_ILP()
@@ -190,9 +191,9 @@ def get_all_tautomers_naive(
     all_tautomers = [new_molecule_for_current_solution(n=0)]
 
     # Remove redundant constraints from previous multi-objective optimistion
-    for constraint_name in ['1_Sequence_Objective', '2_Sequence_Objective']:
-        if constraint_name in problem.constraints:
-            del problem.constraints[constraint_name]
+    # (the constraints sequentialSolve added: their names differ between pulp versions)
+    for constraint_name in set(problem.constraints) - constraints_before_sequential_solve:
+        del problem.constraints[constraint_name]
 
     # Iterate until no more tautomers are found
     solutions = []
@@ -536,6 +537,7 @@ def get_all_tautomers(
 
     # Solve once to find optimal solution with lowest encode_solution()
     try:
+        constraints_before_sequential_solve = set(problem.constraints)
         problem.sequentialSolve(OBJECTIVES, solver=ilp_solver())
         assert problem.status == 1, (molecule.name, LpStatus[problem.status])
     except Exception as e:
@@ -549,7 +551,8 @@ def get_all_tautomers(
     all_tautomers = [new_molecule_for_current_solution(n=0)]
 
     # Remove redundant constraints from previous multi-objective optimistion
-    for constraint_name in ['1_Sequence_Objective', '2_Sequence_Objective', '3_Sequence_Objective']:
+    # (the constraints sequentialSolve added: their names differ between pulp versions)
+    for constraint_name in set(problem.constraints) - constraints_before_sequential_solve:
         del problem.constraints[constraint_name]
 
     solutions = []

@@ -1048,6 +1048,8 @@ class Molecule:
                 pass
             elif variable_type == 'Z':
                 pass
+            elif variable_type == 'A':
+                pass  # allene switch (disallow_allenes_completely), no state to read back
             elif variable_type == 'N':
                 atom_index = int(variable_substr)
                 self.non_bonded_electrons[atom_index] = MUST_BE_INT(v.varValue) * ELECTRON_MULTIPLIER
