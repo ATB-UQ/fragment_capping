@@ -21,7 +21,7 @@ from fragment_capping.helpers.misc import write_to_debug, atom_short_desc
 from fragment_capping.helpers.exceptions import No_Charges_And_Bond_Orders, Too_Many_Permutations, Not_Capped_Error
 from fragment_capping.helpers.iterables import product_len, MAXIMUM_PERMUTATION_NUMBER
 from fragment_capping.helpers.rings import bonds_in_small_rings_for, SMALL_RING, atoms_in_small_rings_for
-from fragment_capping.helpers.ilp_constraints import make_charge_variables, make_absolute_charge_variables, make_non_bonded_electron_variables, electron_balance_rhs, add_absolute_charge_constraints, add_octet_constraint, non_allene_atoms_for, add_allene_exclusion_constraints, add_short_ring_allene_constraints
+from fragment_capping.helpers.ilp_constraints import make_charge_variables, make_absolute_charge_variables, make_non_bonded_electron_variables, add_electron_balance_constraint, add_absolute_charge_constraints, add_octet_constraint, non_allene_atoms_for, add_allene_exclusion_constraints, add_short_ring_allene_constraints
 from fragment_capping.helpers.sybyl import sybyl_atom_type
 from fragment_capping.helpers.vector_calculations import *
 
@@ -997,7 +997,7 @@ class Molecule:
             problem += (ELECTRONS_PER_BOND * sum(bond_orders.values()) + ELECTRON_MULTIPLIER * sum(non_bonded_electrons.values()) == total_electrons, 'Known total electrons')
 
         for atom in self.atoms.values():
-            problem += charges[atom.index] == electron_balance_rhs(atom, bond_orders, self.bonds, non_bonded_electrons, ELECTRON_MULTIPLIER), '{element}_{index}'.format(element=atom.element, index=atom.index)
+            add_electron_balance_constraint(problem, charges, atom, bond_orders, self.bonds, non_bonded_electrons, ELECTRON_MULTIPLIER, '{element}_{index}'.format(element=atom.element, index=atom.index))
 
         # Deal with absolute values
         for atom in self.atoms.values():

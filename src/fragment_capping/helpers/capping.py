@@ -7,7 +7,7 @@ from fragment_capping.helpers.parameters import MAX_ABSOLUTE_CHARGE, MIN_ABSOLUT
 from fragment_capping.helpers.misc import write_to_debug
 from fragment_capping.helpers.exceptions import Too_Many_Permutations, Not_Capped_Error
 from fragment_capping.helpers.iterables import MAXIMUM_PERMUTATION_NUMBER
-from fragment_capping.helpers.ilp_constraints import make_charge_variables, make_absolute_charge_variables, make_non_bonded_electron_variables, electron_balance_rhs, add_absolute_charge_constraints, add_octet_constraint
+from fragment_capping.helpers.ilp_constraints import make_charge_variables, make_absolute_charge_variables, make_non_bonded_electron_variables, add_electron_balance_constraint, add_absolute_charge_constraints, add_octet_constraint
 
 def get_best_capped_molecule_with_ILP(
     molecule: 'Molecule',
@@ -211,14 +211,10 @@ def get_best_capped_molecule_with_ILP(
         )
 
     for atom in molecule.atoms.values():
-        problem += (
-            charges[atom.index]
-            ==
-            electron_balance_rhs(atom, bond_orders, molecule.bonds, non_bonded_electrons, ELECTRON_MULTIPLIER, summation=lpSum)
-            -
-            (counter_charges[atom.index] if atom.index in counter_charges else 0)
-            ,
+        add_electron_balance_constraint(
+            problem, charges, atom, bond_orders, molecule.bonds, non_bonded_electrons, ELECTRON_MULTIPLIER,
             'Electron balance for atom {element}_{index}'.format(element=atom.element, index=atom.index),
+            counter_charge=counter_charges.get(atom.index),
         )
 
     # Deal with absolute values

@@ -11,7 +11,7 @@ from fragment_capping.helpers.parameters import MAX_ABSOLUTE_CHARGE, MIN_ABSOLUT
     ELECTRONEGATIVITIES, new_atom_for_capping_strategy, min_valence_for, max_valence_for, merge_caps
 from fragment_capping.helpers.misc import write_to_debug, atom_short_desc
 from fragment_capping.helpers.graphs import unique_molecules
-from fragment_capping.helpers.ilp_constraints import make_charge_variables, make_absolute_charge_variables, make_non_bonded_electron_variables, electron_balance_rhs, add_absolute_charge_constraints, add_octet_constraint, non_allene_atoms_for, add_allene_exclusion_constraints, add_short_ring_allene_constraints
+from fragment_capping.helpers.ilp_constraints import make_charge_variables, make_absolute_charge_variables, make_non_bonded_electron_variables, add_electron_balance_constraint, add_absolute_charge_constraints, add_octet_constraint, non_allene_atoms_for, add_allene_exclusion_constraints, add_short_ring_allene_constraints
 from fragment_capping.helpers.rings import bonds_in_small_rings_for, SMALL_RING, atoms_in_small_rings_for
 
 def get_all_tautomers_naive(
@@ -105,7 +105,7 @@ def get_all_tautomers_naive(
     OBJECTIVES.append(MAX(sum(non_bonded_electrons.values())))
 
     for atom in map(lambda atom_index: molecule.atoms[atom_index], charges.keys()):
-        problem += charges[atom.index] == electron_balance_rhs(atom, bond_orders, molecule.bonds, non_bonded_electrons, ELECTRON_MULTIPLIER), atom_short_desc(atom)
+        add_electron_balance_constraint(problem, charges, atom, bond_orders, molecule.bonds, non_bonded_electrons, ELECTRON_MULTIPLIER, atom_short_desc(atom))
 
         # Deal with absolute values
         add_absolute_charge_constraints(problem, charges, absolute_charges, atom, name_suffixes=('left', 'right'))
@@ -425,11 +425,8 @@ def get_all_tautomers(
         problem += (lpSum(charges.values()) == net_charge, 'Known net charge={0}'.format(net_charge))
 
     for atom in non_capping_atoms:
-        problem += (
-            charges[atom.index]
-            ==
-            electron_balance_rhs(atom, bond_orders, molecule.bonds, non_bonded_electrons, ELECTRON_MULTIPLIER, summation=lpSum)
-            ,
+        add_electron_balance_constraint(
+            problem, charges, atom, bond_orders, molecule.bonds, non_bonded_electrons, ELECTRON_MULTIPLIER,
             'Electron balance for atom {element}_{index}'.format(element=atom.element, index=atom.index),
         )
 
