@@ -11,6 +11,7 @@ from fragment_capping.helpers.parameters import MAX_ABSOLUTE_CHARGE, MIN_ABSOLUT
     ELECTRONEGATIVITIES, new_atom_for_capping_strategy, min_valence_for, max_valence_for, merge_caps
 from fragment_capping.helpers.misc import write_to_debug, atom_short_desc
 from fragment_capping.helpers.graphs import unique_molecules
+from fragment_capping.helpers.ilp_constraints import make_charge_variables, make_absolute_charge_variables, make_non_bonded_electron_variables, electron_balance_rhs, add_absolute_charge_constraints, add_octet_constraint, non_allene_atoms_for, add_allene_exclusion_constraints, add_short_ring_allene_constraints
 from fragment_capping.helpers.rings import bonds_in_small_rings_for, SMALL_RING, atoms_in_small_rings_for
 
 def get_all_tautomers_naive(
@@ -57,22 +58,16 @@ def get_all_tautomers_naive(
 
     non_capping_bonds = molecule.bonds - capping_bonds
 
-    charges = {
-        atom.index: LpVariable("C_{i}".format(i=atom.index), -MAX_ABSOLUTE_CHARGE, MAX_ABSOLUTE_CHARGE, LpInteger)
+    charges = make_charge_variables(
+        atom.index
         for atom in molecule.atoms.values()
         if atom.index not in capping_atom_ids
-    }
+    )
 
     # Extra variable use to bind charges
-    absolute_charges = {
-        atom_id: LpVariable("Z_{i}".format(i=atom_id), MIN_ABSOLUTE_CHARGE, MAX_ABSOLUTE_CHARGE, LpInteger)
-        for atom_id in charges.keys()
-    }
+    absolute_charges = make_absolute_charge_variables(charges.keys())
 
-    non_bonded_electrons = {
-        atom_id: LpVariable("N_{i}".format(i=atom_id), 0, MAX_NONBONDED_ELECTRONS // ELECTRON_MULTIPLIER, LpInteger)
-        for atom_id in charges.keys()
-    }
+    non_bonded_electrons = make_non_bonded_electron_variables(charges.keys(), ELECTRON_MULTIPLIER)
 
     # Maps a bond to an integer
     bond_mapping = {
@@ -110,18 +105,13 @@ def get_all_tautomers_naive(
     OBJECTIVES.append(MAX(sum(non_bonded_electrons.values())))
 
     for atom in map(lambda atom_index: molecule.atoms[atom_index], charges.keys()):
-        problem += charges[atom.index] == VALENCE_ELECTRONS[atom.element] - sum([bond_orders[bond] for bond in molecule.bonds if atom.index in bond]) - ELECTRON_MULTIPLIER * non_bonded_electrons[atom.index], atom_short_desc(atom)
+        problem += charges[atom.index] == electron_balance_rhs(atom, bond_orders, molecule.bonds, non_bonded_electrons, ELECTRON_MULTIPLIER), atom_short_desc(atom)
 
         # Deal with absolute values
-        problem += charges[atom.index] <= absolute_charges[atom.index], 'Absolute charge contraint left {i}'.format(i=atom.index)
-        problem += -charges[atom.index] <= absolute_charges[atom.index], 'Absolute charge contraint right {i}'.format(i=atom.index)
+        add_absolute_charge_constraints(problem, charges, absolute_charges, atom, name_suffixes=('left', 'right'))
 
         if enforce_octet_rule:
-            if atom.element not in {'B', 'BE', 'P', 'S'}:
-                problem += (
-                    ELECTRONS_PER_BOND * sum([bond_orders[bond] for bond in molecule.bonds if atom.index in bond]) + ELECTRON_MULTIPLIER * non_bonded_electrons[atom.index] == (2 if atom.element in {'H', 'HE'} else 8),
-                    'Octet for atom {element}_{index}'.format(element=atom.element, index=atom.index),
-                )
+            add_octet_constraint(problem, atom, bond_orders, molecule.bonds, non_bonded_electrons, ELECTRON_MULTIPLIER)
 
     capping_atom_for_bond = lambda atom_index, bond: list({atom.index} & bond)[0]
     bond_for_capping_atom_id = lambda atom_index: [bond for bond in molecule.bonds if atom_index in bond][0]
@@ -309,12 +299,7 @@ def get_all_tautomers(
 
     ELECTRON_MULTIPLIER = (2 if not allow_radicals else 1)
 
-    non_allene_atoms = {}
-    for atom in molecule.atoms.values():
-        if disallow_allenes_completely:
-            atom_bonds = [bond for bond in molecule.bonds if atom.index in bond]
-            if atom.element == 'C' and len(atom_bonds) == 2:
-                non_allene_atoms[atom] = atom_bonds
+    non_allene_atoms = non_allene_atoms_for(molecule.atoms.values(), molecule.bonds, disallow_allenes_completely)
 
     fragment_switches, fragment_scores, fragment_H_scores = {}, {}, {}
     capping_atoms_for = {}
@@ -381,22 +366,13 @@ def get_all_tautomers(
     if True:
         molecule.write_graph('debug')
 
-    charges = {
-        atom.index: LpVariable("C_{i}".format(i=atom.index), -MAX_ABSOLUTE_CHARGE, MAX_ABSOLUTE_CHARGE, LpInteger)
-        for atom in non_capping_atoms
-    }
+    charges = make_charge_variables(atom.index for atom in non_capping_atoms)
     original_charges = list(charges.values())
 
     # Extra variable use to bind charges
-    absolute_charges = {
-        atom_id: LpVariable("Z_{i}".format(i=atom_id), MIN_ABSOLUTE_CHARGE, MAX_ABSOLUTE_CHARGE, LpInteger)
-        for atom_id in charges.keys()
-    }
+    absolute_charges = make_absolute_charge_variables(charges.keys())
 
-    non_bonded_electrons = {
-        atom_id: LpVariable("N_{i}".format(i=atom_id), 0, MAX_NONBONDED_ELECTRONS // ELECTRON_MULTIPLIER, LpInteger)
-        for (atom_id, atom) in molecule.atoms.items()
-    }
+    non_bonded_electrons = make_non_bonded_electron_variables(molecule.atoms.keys(), ELECTRON_MULTIPLIER)
 
     # Maps a bond to an integer
     bond_mapping = {
@@ -451,38 +427,21 @@ def get_all_tautomers(
         problem += (
             charges[atom.index]
             ==
-            VALENCE_ELECTRONS[atom.element]
-            -
-            lpSum([bond_orders[bond] for bond in molecule.bonds if atom.index in bond])
-            -
-            ELECTRON_MULTIPLIER * non_bonded_electrons[atom.index]
+            electron_balance_rhs(atom, bond_orders, molecule.bonds, non_bonded_electrons, ELECTRON_MULTIPLIER, summation=lpSum)
             ,
             'Electron balance for atom {element}_{index}'.format(element=atom.element, index=atom.index),
         )
 
     # Deal with absolute values
     for atom in non_capping_atoms:
-        problem += charges[atom.index] <= absolute_charges[atom.index], 'Absolute charge contraint left {i}'.format(i=atom.index)
-        problem += -charges[atom.index] <= absolute_charges[atom.index], 'Absolute charge contraint right {i}'.format(i=atom.index)
+        add_absolute_charge_constraints(problem, charges, absolute_charges, atom, name_suffixes=('left', 'right'))
 
         if enforce_octet_rule and atom not in all_capping_atoms:
-            if atom.element not in {'B', 'BE', 'P', 'S'}:
-                problem += (
-                    ELECTRONS_PER_BOND * lpSum([bond_orders[bond] for bond in molecule.bonds if atom.index in bond]) + ELECTRON_MULTIPLIER * non_bonded_electrons[atom.index] == (2 if atom.element in {'H', 'HE'} else 8),
-                    'Octet for atom {element}_{index}'.format(element=atom.element, index=atom.index),
-                )
+            add_octet_constraint(problem, atom, bond_orders, molecule.bonds, non_bonded_electrons, ELECTRON_MULTIPLIER, summation=lpSum)
 
-    for (atom, (bond_1, bond_2)) in non_allene_atoms.items():
-        new_allene_switch = LpVariable('A_{i}'.format(i=atom.index), 0, 1, LpBinary)
-        problem += 2 * bond_orders[bond_1] - bond_orders[bond_2] + 4 * new_allene_switch >= 3
-        problem += 2 * bond_orders[bond_1] - bond_orders[bond_2] + 4 * new_allene_switch <= 5
-
-    for atom in atoms_in_small_rings_for(molecule):
-        if disallow_allenes_in_small_rings:
-            if atom.element in {'C', 'N'}:
-                adjacent_non_hydrogen_bonds = [bond for bond in non_capping_bonds if atom.index in bond]
-                if len(adjacent_non_hydrogen_bonds) == 2:
-                    problem += sum(bond_orders[bond] for bond in adjacent_non_hydrogen_bonds) <= 3, 'No allenes for atom {atom_desc} in short ring'.format(atom_desc=atom_short_desc(atom))
+    add_allene_exclusion_constraints(problem, bond_orders, non_allene_atoms)
+    # Only the bonds between non-capping atoms count as neighbours here
+    add_short_ring_allene_constraints(problem, molecule, bond_orders, non_capping_bonds, disallow_allenes_in_small_rings)
 
     def debug_failed_ILP(n: Optional[int] = None, force: bool = False) -> None:
         # Off unless ATB_FRAGMENT_CAPPING_DEBUG is set, and never written into the

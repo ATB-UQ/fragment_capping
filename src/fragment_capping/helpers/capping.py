@@ -7,6 +7,7 @@ from fragment_capping.helpers.parameters import MAX_ABSOLUTE_CHARGE, MIN_ABSOLUT
 from fragment_capping.helpers.misc import write_to_debug
 from fragment_capping.helpers.exceptions import Too_Many_Permutations, Not_Capped_Error
 from fragment_capping.helpers.iterables import MAXIMUM_PERMUTATION_NUMBER
+from fragment_capping.helpers.ilp_constraints import make_charge_variables, make_absolute_charge_variables, make_non_bonded_electron_variables, electron_balance_rhs, add_absolute_charge_constraints, add_octet_constraint
 
 def get_best_capped_molecule_with_ILP(
     molecule: 'Molecule',
@@ -144,22 +145,13 @@ def get_best_capped_molecule_with_ILP(
     if True:
         molecule.write_graph('debug')
 
-    charges = {
-        atom.index: LpVariable("C_{i}".format(i=atom.index), -MAX_ABSOLUTE_CHARGE, MAX_ABSOLUTE_CHARGE, LpInteger)
-        for atom in molecule.atoms.values()
-    }
+    charges = make_charge_variables(atom.index for atom in molecule.atoms.values())
     original_charges = list(charges.values())
 
     # Extra variable use to bind charges
-    absolute_charges = {
-        atom_id: LpVariable("Z_{i}".format(i=atom_id), MIN_ABSOLUTE_CHARGE, MAX_ABSOLUTE_CHARGE, LpInteger)
-        for atom_id in charges.keys()
-    }
+    absolute_charges = make_absolute_charge_variables(charges.keys())
 
-    non_bonded_electrons = {
-        atom_id: LpVariable("N_{i}".format(i=atom_id), 0, MAX_NONBONDED_ELECTRONS // ELECTRON_MULTIPLIER, LpInteger)
-        for (atom_id, atom) in molecule.atoms.items()
-    }
+    non_bonded_electrons = make_non_bonded_electron_variables(molecule.atoms.keys(), ELECTRON_MULTIPLIER)
 
     # Maps a bond to an integer
     bond_mapping = {
@@ -222,11 +214,7 @@ def get_best_capped_molecule_with_ILP(
         problem += (
             charges[atom.index]
             ==
-            VALENCE_ELECTRONS[atom.element]
-            -
-            lpSum([bond_orders[bond] for bond in molecule.bonds if atom.index in bond])
-            -
-            ELECTRON_MULTIPLIER * non_bonded_electrons[atom.index]
+            electron_balance_rhs(atom, bond_orders, molecule.bonds, non_bonded_electrons, ELECTRON_MULTIPLIER, summation=lpSum)
             -
             (counter_charges[atom.index] if atom.index in counter_charges else 0)
             ,
@@ -235,15 +223,10 @@ def get_best_capped_molecule_with_ILP(
 
     # Deal with absolute values
     for atom in molecule.atoms.values():
-        problem += charges[atom.index] <= absolute_charges[atom.index], 'Absolute charge contraint 1 {i}'.format(i=atom.index)
-        problem += -charges[atom.index] <= absolute_charges[atom.index], 'Absolute charge contraint 2 {i}'.format(i=atom.index)
+        add_absolute_charge_constraints(problem, charges, absolute_charges, atom)
 
         if enforce_octet_rule and atom not in all_capping_atoms:
-            if atom.element not in {'B', 'BE', 'P', 'S'}:
-                problem += (
-                    ELECTRONS_PER_BOND * lpSum([bond_orders[bond] for bond in molecule.bonds if atom.index in bond]) + ELECTRON_MULTIPLIER * non_bonded_electrons[atom.index] == (2 if atom.element in {'H', 'HE'} else 8),
-                    'Octet for atom {element}_{index}'.format(element=atom.element, index=atom.index),
-                )
+            add_octet_constraint(problem, atom, bond_orders, molecule.bonds, non_bonded_electrons, ELECTRON_MULTIPLIER, summation=lpSum)
 
     try:
         problem.sequentialSolve(OBJECTIVES, solver=ilp_solver())

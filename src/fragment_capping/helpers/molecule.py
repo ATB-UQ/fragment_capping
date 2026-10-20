@@ -21,6 +21,7 @@ from fragment_capping.helpers.misc import write_to_debug, atom_short_desc
 from fragment_capping.helpers.exceptions import No_Charges_And_Bond_Orders, Too_Many_Permutations, Not_Capped_Error
 from fragment_capping.helpers.iterables import product_len, MAXIMUM_PERMUTATION_NUMBER
 from fragment_capping.helpers.rings import bonds_in_small_rings_for, SMALL_RING, atoms_in_small_rings_for
+from fragment_capping.helpers.ilp_constraints import make_charge_variables, make_absolute_charge_variables, make_non_bonded_electron_variables, electron_balance_rhs, add_absolute_charge_constraints, add_octet_constraint, non_allene_atoms_for, add_allene_exclusion_constraints, add_short_ring_allene_constraints
 from fragment_capping.helpers.sybyl import sybyl_atom_type
 from fragment_capping.helpers.vector_calculations import *
 
@@ -943,28 +944,14 @@ class Molecule:
 
         ELECTRON_MULTIPLIER = (2 if not allow_radicals else 1)
 
-        non_allene_atoms = {}
-        for atom in self.atoms.values():
-            if disallow_allenes_completely:
-                atom_bonds = [bond for bond in self.bonds if atom.index in bond]
-                if atom.element == 'C' and len(atom_bonds) == 2:
-                    non_allene_atoms[atom] = atom_bonds
+        non_allene_atoms = non_allene_atoms_for(self.atoms.values(), self.bonds, disallow_allenes_completely)
 
-        charges = {
-            atom.index: LpVariable("C_{i}".format(i=atom.index), -MAX_ABSOLUTE_CHARGE, MAX_ABSOLUTE_CHARGE, LpInteger)
-            for atom in self.atoms.values()
-        }
+        charges = make_charge_variables(atom.index for atom in self.atoms.values())
 
         # Extra variable use to bind charges
-        absolute_charges = {
-            atom_id: LpVariable("Z_{i}".format(i=atom_id), MIN_ABSOLUTE_CHARGE, MAX_ABSOLUTE_CHARGE, LpInteger)
-            for atom_id in charges.keys()
-        }
+        absolute_charges = make_absolute_charge_variables(charges.keys())
 
-        non_bonded_electrons = {
-            atom_id: LpVariable("N_{i}".format(i=atom_id), 0, MAX_NONBONDED_ELECTRONS // ELECTRON_MULTIPLIER, LpInteger)
-            for (atom_id, atom) in self.atoms.items()
-        }
+        non_bonded_electrons = make_non_bonded_electron_variables(self.atoms.keys(), ELECTRON_MULTIPLIER)
 
         # Maps a bond to an integer
         bond_mapping = {
@@ -1010,34 +997,20 @@ class Molecule:
             problem += (ELECTRONS_PER_BOND * sum(bond_orders.values()) + ELECTRON_MULTIPLIER * sum(non_bonded_electrons.values()) == total_electrons, 'Known total electrons')
 
         for atom in self.atoms.values():
-            problem += charges[atom.index] == VALENCE_ELECTRONS[atom.element] - sum([bond_orders[bond] for bond in self.bonds if atom.index in bond]) - ELECTRON_MULTIPLIER * non_bonded_electrons[atom.index], '{element}_{index}'.format(element=atom.element, index=atom.index)
+            problem += charges[atom.index] == electron_balance_rhs(atom, bond_orders, self.bonds, non_bonded_electrons, ELECTRON_MULTIPLIER), '{element}_{index}'.format(element=atom.element, index=atom.index)
 
         # Deal with absolute values
         for atom in self.atoms.values():
-            problem += charges[atom.index] <= absolute_charges[atom.index], 'Absolute charge contraint 1 {i}'.format(i=atom.index)
-            problem += -charges[atom.index] <= absolute_charges[atom.index], 'Absolute charge contraint 2 {i}'.format(i=atom.index)
+            add_absolute_charge_constraints(problem, charges, absolute_charges, atom)
 
             if enforce_octet_rule:
-                if atom.element not in {'B', 'BE', 'P', 'S'}:
-                    problem += (
-                        ELECTRONS_PER_BOND * sum([bond_orders[bond] for bond in self.bonds if atom.index in bond]) + ELECTRON_MULTIPLIER * non_bonded_electrons[atom.index] == (2 if atom.element in {'H', 'HE'} else 8),
-                        'Octet for atom {element}_{index}'.format(element=atom.element, index=atom.index),
-                    )
+                add_octet_constraint(problem, atom, bond_orders, self.bonds, non_bonded_electrons, ELECTRON_MULTIPLIER)
 
         for (bond, bond_order) in bond_order_constraints:
             problem += bond_orders[frozenset(bond)] == bond_order, 'Constraint bond {0} == {1}'.format(bond, bond_order)
 
-        for (atom, (bond_1, bond_2)) in non_allene_atoms.items():
-            new_allene_switch = LpVariable('A_{i}'.format(i=atom.index), 0, 1, LpBinary)
-            problem += 2 * bond_orders[bond_1] - bond_orders[bond_2] + 4 * new_allene_switch >= 3
-            problem += 2 * bond_orders[bond_1] - bond_orders[bond_2] + 4 * new_allene_switch <= 5
-
-        for atom in atoms_in_small_rings_for(self):
-            if disallow_allenes_in_small_rings:
-                if atom.element in {'C', 'N'}:
-                    adjacent_non_hydrogen_bonds = [bond for bond in self.bonds if atom.index in bond]
-                    if len(adjacent_non_hydrogen_bonds) == 2:
-                        problem += sum(bond_orders[bond] for bond in adjacent_non_hydrogen_bonds) <= 3, 'No allenes for atom {atom_desc} in short ring'.format(atom_desc=atom_short_desc(atom))
+        add_allene_exclusion_constraints(problem, bond_orders, non_allene_atoms)
+        add_short_ring_allene_constraints(problem, self, bond_orders, self.bonds, disallow_allenes_in_small_rings)
 
         try:
             sequential_solve_within(problem, OBJECTIVES, timeout=timeout)
